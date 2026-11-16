@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Smart Door Lock</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --text: #1b1f24;
+    --muted: #6a737d;
+    --border: #e1e4e8;
+    --accent: #0b5fff;
+    --accent-text: #ffffff;
+    --ok: #1a7f4b;      --ok-bg: #e3f4ea;
+    --open: #9a6700;    --open-bg: #fff3d1;
+    --alarm: #c62828;   --alarm-bg: #fde7e7;
+    --off: #57606a;     --off-bg: #eceef1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1318;
+      --card: #181d24;
+      --text: #e8ecf1;
+      --muted: #98a2ae;
+      --border: #2a313b;
+      --accent: #6ea0ff;
+      --accent-text: #0b1220;
+      --ok: #5fd394;    --ok-bg: #12301f;
+      --open: #f2c75c;  --open-bg: #3a2e0c;
+      --alarm: #ff7b7b; --alarm-bg: #3b1414;
+      --off: #aab2bd;   --off-bg: #222831;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 24px 16px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { width: 100%; max-width: 420px; }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+  h1 { font-size: 1.15rem; margin: 0; }
+  .conn { display: flex; align-items: center; gap: 6px; font-size: .8rem; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); }
+  .dot.on { background: var(--ok); }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .label { font-size: .8rem; color: var(--muted); margin-bottom: 8px; }
+
+  .status {
+    text-align: center;
+    font-size: 1.7rem;
+    font-weight: 700;
+    padding: 24px 12px;
+    border-radius: 10px;
+    background: var(--off-bg);
+    color: var(--off);
+  }
+  .status.locked { background: var(--ok-bg);    color: var(--ok); }
+  .status.open   { background: var(--open-bg);  color: var(--open); }
+  .status.alarm  { background: var(--alarm-bg); color: var(--alarm); }
+
+  label { display: block; font-size: .85rem; margin-bottom: 6px; }
+  input {
+    width: 100%;
+    padding: 14px;
+    font-size: 1.4rem;
+    letter-spacing: .4em;
+    text-align: center;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg);
+    color: var(--text);
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button {
+    width: 100%;
+    margin-top: 12px;
+    padding: 14px;
+    font-size: 1rem;
+    font-weight: 600;
+    border: 0;
+    border-radius: 10px;
+    background: var(--accent);
+    color: var(--accent-text);
+    cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+
+  #msg { min-height: 1.4em; margin: 12px 0 0; font-size: .9rem; color: var(--muted); text-align: center; }
+  #msg.ok  { color: var(--ok); }
+  #msg.err { color: var(--alarm); }
+
+  footer { font-size: .75rem; color: var(--muted); text-align: center; line-height: 1.5; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Smart Door Lock</h1>
+    <div class="conn"><span class="dot" id="dot"></span><span id="connText">Menghubungkan…</span></div>
+  </header>
+
+  <section class="card">
+    <div class="label">Status pintu</div>
+    <div class="status" id="status">Menunggu data…</div>
+  </section>
+
+  <section class="card">
+    <form id="form" autocomplete="off">
+      <label for="pin">PIN pintu</label>
+      <input id="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="••••">
+      <button id="btn" type="submit">Buka pintu</button>
+    </form>
+    <p id="msg" role="status" aria-live="polite"></p>
+  </section>
+
+  <footer>
+    Perintah dikirim lewat broker MQTT publik. Hanya untuk belajar dan demo, jangan dipakai untuk pintu sungguhan.
+  </footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js"></script>
+<script>
+  // WAJIB SAMA PERSIS dengan TOPIC_PREFIX di sketch ESP32
+  const TOPIC_PREFIX = "smartdoor-k7x92qmb";
+
+  // Broker publik HiveMQ lewat WebSocket aman (wss), cocok untuk halaman https GitHub Pages
+  const BROKER_URL = "wss://broker.hivemq.com:8884/mqtt";
+
+  const T_CMD = TOPIC_PREFIX + "/cmd";
+  const T_STATUS = TOPIC_PREFIX + "/status";
+  const T_RESP = TOPIC_PREFIX + "/resp";
+
+  const $ = (id) => document.getElementById(id);
+  const statusEl = $("status"), dotEl = $("dot"), connText = $("connText");
+  const form = $("form"), pinEl = $("pin"), btn = $("btn"), msgEl = $("msg");
+
+  const STATUS_VIEW = {
+    TERKUNCI: { text: "Terkunci", cls: "locked" },
+    TERBUKA:  { text: "Terbuka",  cls: "open" },
+    ALARM:    { text: "ALARM!",   cls: "alarm" },
+    OFFLINE:  { text: "Perangkat offline", cls: "" }
+  };
+
+  function showMsg(text, kind) {
+    msgEl.textContent = text;
+    msgEl.className = kind || "";
+  }
+
+  function showStatus(code) {
+    const v = STATUS_VIEW[code] || { text: code, cls: "" };
+    statusEl.textContent = v.text;
+    statusEl.className = "status " + v.cls;
+  }
+
+  function setConnected(on) {
+    dotEl.className = "dot" + (on ? " on" : "");
+    connText.textContent = on ? "Terhubung" : "Menghubungkan…";
+    btn.disabled = !on;
+  }
+
+  function showResp(code) {
+    if (code === "OK") return showMsg("PIN benar, pintu dibuka.", "ok");
+    if (code.startsWith("PIN_SALAH:")) {
+      return showMsg("PIN salah. Sisa percobaan: " + code.split(":")[1] + ".", "err");
+    }
+    if (code === "ALARM") return showMsg("Terlalu banyak PIN salah. Alarm menyala.", "err");
+    if (code === "ALARM_AKTIF") return showMsg("Alarm sedang aktif, perintah ditolak.", "err");
+    if (code === "SIBUK") return showMsg("Keypad sedang dipakai, coba lagi sebentar.", "err");
+    showMsg(code);
+  }
+
+  setConnected(false);
+
+  if (TOPIC_PREFIX.includes("GANTI")) {
+    showMsg("Ubah TOPIC_PREFIX di index.html dan sketch ESP32 dengan teks acak Anda sendiri.", "err");
+  }
+
+  if (typeof mqtt === "undefined") {
+    showMsg("Library MQTT gagal dimuat. Cek koneksi internet lalu muat ulang halaman.", "err");
+  } else {
+    const client = mqtt.connect(BROKER_URL, {
+      clientId: "web-" + Math.random().toString(16).slice(2, 10),
+      reconnectPeriod: 3000,
+      connectTimeout: 10000
+    });
+
+    client.on("connect", () => {
+      setConnected(true);
+      client.subscribe([T_STATUS, T_RESP]);
+    });
+    client.on("reconnect", () => setConnected(false));
+    client.on("close", () => setConnected(false));
+    client.on("error", () => setConnected(false));
+
+    client.on("message", (topic, payload) => {
+      const text = payload.toString();
+      if (topic === T_STATUS) showStatus(text);
+      else if (topic === T_RESP) showResp(text);
+    });
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const pin = pinEl.value.trim();
+      if (!/^\d{4,8}$/.test(pin)) {
+        showMsg("PIN harus 4-8 digit angka.", "err");
+        return;
+      }
+      if (!client.connected) {
+        showMsg("Belum terhubung ke broker.", "err");
+        return;
+      }
+      client.publish(T_CMD, "UNLOCK:" + pin);
+      pinEl.value = "";
+      showMsg("Perintah dikirim…");
+    });
+  }
+</script>
+</body>
+</html>
